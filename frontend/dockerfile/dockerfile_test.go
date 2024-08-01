@@ -5645,11 +5645,15 @@ RUN echo $(hostname) | grep foo
 }
 
 func testEmptyStages(t *testing.T, sb integration.Sandbox) {
-	integration.SkipOnPlatform(t, "windows")
 	f := getFrontend(t, sb)
-	dockerfile := []byte(`
+	dockerfile := []byte(integration.UnixOrWindows(
+		`
 ARG foo=bar
-`)
+`,
+		`	
+ARG foo=bar
+`,
+	))
 
 	dir := integration.Tmpdir(
 		t,
