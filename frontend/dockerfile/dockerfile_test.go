@@ -5587,14 +5587,19 @@ COPY Dockerfile Dockerfile
 
 // moby/buildkit#1301
 func testDockerfileCheckHostname(t *testing.T, sb integration.Sandbox) {
-	integration.SkipOnPlatform(t, "windows")
 	f := getFrontend(t, sb)
-	dockerfile := []byte(`
+	dockerfile := []byte(integration.UnixOrWindows(
+		`
 FROM busybox
 RUN cat /etc/hosts | grep foo
 RUN echo $HOSTNAME | grep foo
 RUN echo $(hostname) | grep foo
-`)
+`,
+		`	
+FROM mcr.microsoft.com/windows/nanoserver:ltsc2022
+RUN echo %COMPUTERNAME% | findstr "FOO"
+`,
+	))
 
 	dir := integration.Tmpdir(
 		t,
@@ -5645,11 +5650,15 @@ RUN echo $(hostname) | grep foo
 }
 
 func testEmptyStages(t *testing.T, sb integration.Sandbox) {
-	integration.SkipOnPlatform(t, "windows")
 	f := getFrontend(t, sb)
-	dockerfile := []byte(`
+	dockerfile := []byte(integration.UnixOrWindows(
+		`
 ARG foo=bar
-`)
+`,
+		`	
+ARG foo=bar
+`,
+	))
 
 	dir := integration.Tmpdir(
 		t,
@@ -6127,19 +6136,27 @@ RUN echo foo >> /test
 }
 
 func testNamedImageContextScratch(t *testing.T, sb integration.Sandbox) {
-	integration.SkipOnPlatform(t, "windows")
 	ctx := sb.Context()
 
 	c, err := client.New(ctx, sb.Address())
 	require.NoError(t, err)
 	defer c.Close()
 
-	dockerfile := []byte(`
+	dockerfile := []byte(integration.UnixOrWindows(
+		`
 FROM busybox
 COPY <<EOF /out
 hello world!
 EOF
-`)
+`,
+		`	
+FROM nanoserver AS build
+FROM busybox
+COPY <<EOF /out
+hello world!
+EOF
+`,
+	))
 
 	dir := integration.Tmpdir(
 		t,
