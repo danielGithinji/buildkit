@@ -5587,14 +5587,19 @@ COPY Dockerfile Dockerfile
 
 // moby/buildkit#1301
 func testDockerfileCheckHostname(t *testing.T, sb integration.Sandbox) {
-	integration.SkipOnPlatform(t, "windows")
 	f := getFrontend(t, sb)
-	dockerfile := []byte(`
+	dockerfile := []byte(integration.UnixOrWindows(
+		`
 FROM busybox
 RUN cat /etc/hosts | grep foo
 RUN echo $HOSTNAME | grep foo
 RUN echo $(hostname) | grep foo
-`)
+`,
+		`	
+FROM mcr.microsoft.com/windows/nanoserver:ltsc2022
+RUN echo %COMPUTERNAME% | findstr "FOO"
+`,
+	))
 
 	dir := integration.Tmpdir(
 		t,
@@ -5645,11 +5650,15 @@ RUN echo $(hostname) | grep foo
 }
 
 func testEmptyStages(t *testing.T, sb integration.Sandbox) {
-	integration.SkipOnPlatform(t, "windows")
 	f := getFrontend(t, sb)
-	dockerfile := []byte(`
+	dockerfile := []byte(integration.UnixOrWindows(
+		`
 ARG foo=bar
-`)
+`,
+		`	
+ARG foo=bar
+`,
+	))
 
 	dir := integration.Tmpdir(
 		t,
