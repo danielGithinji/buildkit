@@ -5977,7 +5977,6 @@ COPY --from=base /env_foobar /
 }
 
 func testNamedImageContextPlatform(t *testing.T, sb integration.Sandbox) {
-	integration.SkipOnPlatform(t, "windows")
 	workers.CheckFeatureCompat(t, sb, workers.FeatureDirectPush)
 	ctx := sb.Context()
 
@@ -5992,7 +5991,8 @@ func testNamedImageContextPlatform(t *testing.T, sb integration.Sandbox) {
 	require.NoError(t, err)
 
 	// Build a base image and force buildkit to generate a manifest list.
-	dockerfile := []byte(`FROM --platform=$BUILDPLATFORM alpine:latest`)
+	dockerfile := []byte(integration.UnixOrWindows(`FROM --platform=$BUILDPLATFORM alpine:latest`,
+		`FROM --platform=$BUILDPLATFORM nanoserver:latest`))
 	target := registry + "/buildkit/testnamedimagecontextplatform:latest"
 
 	dir := integration.Tmpdir(
@@ -6022,10 +6022,12 @@ func testNamedImageContextPlatform(t *testing.T, sb integration.Sandbox) {
 	}, nil)
 	require.NoError(t, err)
 
-	dockerfile = []byte(`
+	dockerfile = []byte(integration.UnixOrWindows(`
 FROM --platform=$BUILDPLATFORM busybox AS target
-RUN echo hello
-`)
+RUN echo hello`,
+		`
+FROM --platform=$BUILDPLATFORM nanoserver AS target
+RUN echo hello`))
 
 	dir = integration.Tmpdir(
 		t,
