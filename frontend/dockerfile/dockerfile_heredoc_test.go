@@ -110,10 +110,9 @@ COPY --from=build /dest /
 }
 
 func testCopyHeredocSpecialSymbols(t *testing.T, sb integration.Sandbox) {
-	integration.SkipOnPlatform(t, "windows")
 	f := getFrontend(t, sb)
 
-	dockerfile := []byte(`
+	dockerfile := []byte(integration.UnixOrWindows(`
 FROM scratch
 
 COPY <<EOF quotefile
@@ -139,7 +138,32 @@ EOF
 COPY <<"EOF" rawslashfile3
 \$
 EOF
-`)
+`, `
+FROM nanoserver
+
+COPY <<EOF quotefile
+"quotes in file"
+EOF
+
+COPY <<EOF slashfile1
+\
+EOF
+COPY <<EOF slashfile2
+\\
+EOF
+COPY <<EOF slashfile3
+\$
+EOF
+
+COPY <<"EOF" rawslashfile1
+\
+EOF
+COPY <<"EOF" rawslashfile2
+\\
+EOF
+COPY <<"EOF" rawslashfile3
+\$
+EOF`))
 
 	dir := integration.Tmpdir(
 		t,
