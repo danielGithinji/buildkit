@@ -2823,6 +2823,7 @@ FROM nanoserver:${tag}
 }
 
 func testDockerfileDirs(t *testing.T, sb integration.Sandbox) {
+	integration.SkipOnPlatform(t, "windows")
 	f := getFrontend(t, sb)
 	f.RequiresBuildctl(t)
 
@@ -9189,6 +9190,7 @@ COPY test+aou.txt /
 }
 
 func testSourcePolicyWithNamedContext(t *testing.T, sb integration.Sandbox) {
+	integration.SkipOnPlatform(t, "windows")
 	f := getFrontend(t, sb)
 	c, err := client.New(sb.Context(), sb.Address())
 	require.NoError(t, err)
