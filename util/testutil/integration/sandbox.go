@@ -22,7 +22,7 @@ import (
 
 const buildkitdConfigFile = "buildkitd.toml"
 
-const maxSandboxTimeout = 5 * time.Minute
+const maxSandboxTimeout = 15 * time.Minute
 
 type sandbox struct {
 	Backend
