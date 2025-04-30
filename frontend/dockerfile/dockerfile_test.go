@@ -1476,6 +1476,7 @@ COPY --from=build /sub2/foo bar
 `,
 		`
 FROM nanoserver AS build
+USER ContainerAdministrator
 RUN mkdir out\sub && mklink /D sub out\sub && mklink /D sub2 out\sub && echo data> sub\foo 
 FROM nanoserver
 COPY --from=build /sub/foo .
