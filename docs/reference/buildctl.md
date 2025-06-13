@@ -29,7 +29,7 @@ GLOBAL OPTIONS:
    --tlscacert value      CA certificate for validation
    --tlscert value        client certificate
    --tlskey value         client key
-   --tlsdir value         directory containing CA certificate, client certificate, and client key
+   --tlsdir value         directory containing CA certificate, client certificate, and client key. Supported file names are (ca.pem, cert.pem, key.pem) or (ca.crt, tls.crt, tls.key)
    --timeout value        timeout backend connection after value seconds (default: 5)
    --wait                 block RPCs until the connection becomes available
    --help, -h             show help
@@ -74,7 +74,7 @@ OPTIONS:
    --import-cache value              Import build cache, e.g. --import-cache type=registry,ref=example.com/foo/bar, or --import-cache type=local,src=path/to/dir
    --secret value                    Secret value exposed to the build. Format id=secretname,src=filepath
    --allow value                     Allow extra privileged entitlement, e.g. network.host, security.insecure
-   --ssh value                       Allow forwarding SSH agent to the builder. Format default|<id>[=<socket>|<key>[,<key>]]
+   --ssh value                       Allow forwarding SSH agent or a raw Unix socket to the builder. Format default|<id>[=<socket>[,raw=false]|<key>[,<key>]]
    --metadata-file value             Output build metadata (e.g., image digest) to a file as JSON
    --source-policy-file value        Read source policy file from a JSON file
    --ref-file value                  Write build ref to a file

@@ -83,6 +83,7 @@ var allTests = integration.TestFuncs(
 	testDockerfileInvalidCommand,
 	testDockerfileADDFromURL,
 	testDockerfileAddArchive,
+	testDockerfileAddChownArchive,
 	testDockerfileScratchConfig,
 	testExportedHistory,
 	testExportedHistoryFlattenArgs,
@@ -200,6 +201,7 @@ var allTests = integration.TestFuncs(
 	testDockerIgnoreMissingProvenance,
 	testCommandSourceMapping,
 	testSBOMScannerArgs,
+	testMultiNilRefsOCIExporter,
 	testNilContextInSolveGateway,
 	testMultiNilRefsInSolveGateway,
 	testCopyUnicodePath,
@@ -215,7 +217,7 @@ var allTests = integration.TestFuncs(
 	testLocalCustomSessionID,
 	testTargetStageNameArg,
 	testStepNames,
-	testPowershellInDefaultPathOnWindows,
+	testDefaultPathEnvOnWindows,
 	testOCILayoutMultiname,
 	testPlatformWithOSVersion,
 	testMaintainBaseOSVersion,
@@ -234,6 +236,7 @@ var heredocTests = []integration.Test{}
 // Tests that depend on reproducible env
 var reproTests = integration.TestFuncs(
 	testReproSourceDateEpoch,
+	testWorkdirSourceDateEpochReproducible,
 )
 
 var (
@@ -908,6 +911,84 @@ WORKDIR /
 	fi, err := os.Lstat(filepath.Join(destDir, "foo"))
 	require.NoError(t, err)
 	require.Equal(t, true, fi.IsDir())
+}
+
+// testWorkdirSourceDateEpochReproducible ensures that WORKDIR is reproducible with SOURCE_DATE_EPOCH.
+func testWorkdirSourceDateEpochReproducible(t *testing.T, sb integration.Sandbox) {
+	integration.SkipOnPlatform(t, "windows")
+	workers.CheckFeatureCompat(t, sb, workers.FeatureOCIExporter, workers.FeatureSourceDateEpoch)
+	f := getFrontend(t, sb)
+
+	dockerfile := []byte(`
+FROM alpine
+WORKDIR /mydir
+`)
+
+	dir := integration.Tmpdir(
+		t,
+		fstest.CreateFile("Dockerfile", dockerfile, 0600),
+	)
+
+	c, err := client.New(sb.Context(), sb.Address())
+	require.NoError(t, err)
+	defer c.Close()
+
+	destDir1 := t.TempDir()
+	epoch := fmt.Sprintf("%d", time.Date(2023, 1, 10, 15, 34, 56, 0, time.UTC).Unix())
+
+	_, err = f.Solve(sb.Context(), c, client.SolveOpt{
+		FrontendAttrs: map[string]string{
+			"build-arg:SOURCE_DATE_EPOCH": epoch,
+		},
+		Exports: []client.ExportEntry{
+			{
+				Type:      client.ExporterOCI,
+				OutputDir: destDir1,
+				Attrs: map[string]string{
+					"tar": "false",
+				},
+			},
+		},
+		LocalMounts: map[string]fsutil.FS{
+			dockerui.DefaultLocalNameDockerfile: dir,
+			dockerui.DefaultLocalNameContext:    dir,
+		},
+	}, nil)
+	require.NoError(t, err)
+
+	index1, err := os.ReadFile(filepath.Join(destDir1, "index.json"))
+	require.NoError(t, err)
+
+	// Prune all cache
+	ensurePruneAll(t, c, sb)
+
+	time.Sleep(3 * time.Second)
+
+	destDir2 := t.TempDir()
+	_, err = f.Solve(sb.Context(), c, client.SolveOpt{
+		FrontendAttrs: map[string]string{
+			"build-arg:SOURCE_DATE_EPOCH": epoch,
+		},
+		Exports: []client.ExportEntry{
+			{
+				Type:      client.ExporterOCI,
+				OutputDir: destDir2,
+				Attrs: map[string]string{
+					"tar": "false",
+				},
+			},
+		},
+		LocalMounts: map[string]fsutil.FS{
+			dockerui.DefaultLocalNameDockerfile: dir,
+			dockerui.DefaultLocalNameContext:    dir,
+		},
+	}, nil)
+	require.NoError(t, err)
+
+	index2, err := os.ReadFile(filepath.Join(destDir2, "index.json"))
+	require.NoError(t, err)
+
+	require.Equal(t, index1, index2)
 }
 
 func testCacheReleased(t *testing.T, sb integration.Sandbox) {
@@ -1865,7 +1946,8 @@ COPY Dockerfile .
 		entrypoint []string
 		env        []string
 	}{
-		{p: "windows/amd64", entrypoint: []string{"cmd", "/S", "/C", "foo bar"}, env: []string{"PATH=c:\\Windows\\System32;c:\\Windows;C:\\Windows\\System32\\WindowsPowerShell\\v1.0"}},
+		// we don't set PATH on Windows. #5445
+		{p: "windows/amd64", entrypoint: []string{"cmd", "/S", "/C", "foo bar"}, env: []string(nil)},
 		{p: "linux/amd64", entrypoint: []string{"/bin/sh", "-c", "foo bar"}, env: []string{"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}},
 	} {
 		t.Run(exp.p, func(t *testing.T) {
@@ -2019,14 +2101,11 @@ COPY --from=base /out/ /
 	require.Equal(t, fmt.Sprintf("value:final%s", lineEnd), string(dt))
 }
 
-func testPowershellInDefaultPathOnWindows(t *testing.T, sb integration.Sandbox) {
+func testDefaultPathEnvOnWindows(t *testing.T, sb integration.Sandbox) {
 	integration.SkipOnPlatform(t, "!windows")
 
 	f := getFrontend(t, sb)
 
-	// just testing that the powershell path is in PATH
-	// but not testing powershell itself since it will need
-	// servercore image that is too bulky for just one single test.
 	dockerfile := []byte(`
 FROM nanoserver
 USER ContainerAdministrator
@@ -2059,7 +2138,7 @@ RUN echo %PATH% > env_path.txt
 	require.NoError(t, err)
 
 	envPath := string(dt)
-	require.Contains(t, envPath, "C:\\Windows\\System32\\WindowsPowerShell\\v1.0")
+	require.Contains(t, envPath, "C:\\Windows")
 }
 
 func testExportMultiPlatform(t *testing.T, sb integration.Sandbox) {
@@ -3144,6 +3223,34 @@ ADD t.tar.gz /
 	require.NoError(t, err)
 	require.Equal(t, expectedContent, dt)
 
+	// add with unpack=false
+	dockerfile = fmt.Appendf(nil, `
+	FROM %s
+	ADD --unpack=false t.tar.gz /
+	`, baseImage)
+
+	dir = integration.Tmpdir(
+		t,
+		fstest.CreateFile("Dockerfile", dockerfile, 0600),
+		fstest.CreateFile("t.tar.gz", buf2.Bytes(), 0600),
+	)
+
+	args, trace = f.DFCmdArgs(dir.Name, dir.Name)
+	defer os.RemoveAll(trace)
+
+	destDir = t.TempDir()
+
+	cmd = sb.Cmd(args + fmt.Sprintf(" --output type=local,dest=%s", destDir))
+	require.NoError(t, cmd.Run())
+
+	_, err = os.Stat(filepath.Join(destDir, "foo"))
+	require.Error(t, err)
+	require.True(t, os.IsNotExist(err))
+
+	dt, err = os.ReadFile(filepath.Join(destDir, "t.tar.gz"))
+	require.NoError(t, err)
+	require.Equal(t, buf2.Bytes(), dt)
+
 	// COPY doesn't extract
 	dockerfile = fmt.Appendf(nil, `
 FROM %s
@@ -3201,6 +3308,29 @@ ADD %s /
 	require.NoError(t, err)
 	require.Equal(t, buf2.Bytes(), dt)
 
+	// ADD from URL with --unpack=true
+	dockerfile = fmt.Appendf(nil, `
+FROM %s
+ADD --unpack=true %s /dest/
+`, baseImage, server.URL+"/t.tar.gz")
+
+	dir = integration.Tmpdir(
+		t,
+		fstest.CreateFile("Dockerfile", dockerfile, 0600),
+	)
+
+	args, trace = f.DFCmdArgs(dir.Name, dir.Name)
+	defer os.RemoveAll(trace)
+
+	destDir = t.TempDir()
+
+	cmd = sb.Cmd(args + fmt.Sprintf(" --output type=local,dest=%s", destDir))
+	require.NoError(t, cmd.Run())
+
+	dt, err = os.ReadFile(filepath.Join(destDir, "dest/foo"))
+	require.NoError(t, err)
+	require.Equal(t, expectedContent, dt)
+
 	// https://github.com/moby/buildkit/issues/386
 	dockerfile = fmt.Appendf(nil, `
 FROM %s
@@ -3223,6 +3353,70 @@ ADD %s /newname.tar.gz
 	dt, err = os.ReadFile(filepath.Join(destDir, "newname.tar.gz"))
 	require.NoError(t, err)
 	require.Equal(t, buf2.Bytes(), dt)
+}
+
+func testDockerfileAddChownArchive(t *testing.T, sb integration.Sandbox) {
+	integration.SkipOnPlatform(t, "windows")
+	f := getFrontend(t, sb)
+
+	buf := bytes.NewBuffer(nil)
+	tw := tar.NewWriter(buf)
+	content := []byte("content0")
+	err := tw.WriteHeader(&tar.Header{
+		Name:     "foo",
+		Typeflag: tar.TypeReg,
+		Size:     int64(len(content)),
+		Mode:     0644,
+	})
+	require.NoError(t, err)
+	_, err = tw.Write(content)
+	require.NoError(t, err)
+	err = tw.Close()
+	require.NoError(t, err)
+
+	dockerfile := []byte(`
+FROM scratch
+ADD --chown=100:200 t.tar /out/
+`)
+
+	dir := integration.Tmpdir(
+		t,
+		fstest.CreateFile("Dockerfile", dockerfile, 0600),
+		fstest.CreateFile("t.tar", buf.Bytes(), 0600),
+	)
+
+	c, err := client.New(sb.Context(), sb.Address())
+	require.NoError(t, err)
+	defer c.Close()
+
+	outBuf := &bytes.Buffer{}
+	_, err = f.Solve(sb.Context(), c, client.SolveOpt{
+		Exports: []client.ExportEntry{
+			{
+				Type:   client.ExporterTar,
+				Output: fixedWriteCloser(&nopWriteCloser{outBuf}),
+			},
+		},
+		LocalMounts: map[string]fsutil.FS{
+			dockerui.DefaultLocalNameDockerfile: dir,
+			dockerui.DefaultLocalNameContext:    dir,
+		},
+	}, nil)
+	require.NoError(t, err)
+
+	m, err := testutil.ReadTarToMap(outBuf.Bytes(), false)
+	require.NoError(t, err)
+
+	mi, ok := m["out/foo"]
+	require.True(t, ok)
+	require.Equal(t, "content0", string(mi.Data))
+	require.Equal(t, 100, mi.Header.Uid)
+	require.Equal(t, 200, mi.Header.Gid)
+
+	mi, ok = m["out/"]
+	require.True(t, ok)
+	require.Equal(t, 100, mi.Header.Uid)
+	require.Equal(t, 200, mi.Header.Gid)
 }
 
 func testDockerfileAddArchiveWildcard(t *testing.T, sb integration.Sandbox) {
@@ -3629,7 +3823,7 @@ COPY . .
 	)
 
 	ctx, cancel := context.WithCancelCause(sb.Context())
-	ctx, _ = context.WithTimeoutCause(ctx, 15*time.Second, errors.WithStack(context.DeadlineExceeded))
+	ctx, _ = context.WithTimeoutCause(ctx, 15*time.Second, errors.WithStack(context.DeadlineExceeded)) //nolint:govet
 	defer func() { cancel(errors.WithStack(context.Canceled)) }()
 
 	c, err := client.New(ctx, sb.Address())
@@ -6915,7 +7109,6 @@ RUN  reg query "HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\Tcpip\Param
 		},
 	}
 	for _, tt := range cases {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			_, err = f.Solve(sb.Context(), c, client.SolveOpt{
 				FrontendAttrs: tt.attrs,
@@ -7163,9 +7356,10 @@ COPY --from=base --chmod=0644 /out /out
 				}
 				visited[vtx.Name] = struct{}{}
 				t.Logf("step: %q", vtx.Name)
-				if vtx.Name == `[base 3/3] RUN echo "base" > base` {
+				switch vtx.Name {
+				case `[base 3/3] RUN echo "base" > base`:
 					hasRun = true
-				} else if vtx.Name == `[stage-1 1/1] COPY --from=base --chmod=0644 /out /out` {
+				case `[stage-1 1/1] COPY --from=base --chmod=0644 /out /out`:
 					hasCopy = true
 				}
 			}
@@ -9045,6 +9239,66 @@ COPY --link foo foo
 	}
 }
 
+func testMultiNilRefsOCIExporter(t *testing.T, sb integration.Sandbox) {
+	integration.SkipOnPlatform(t, "windows")
+	workers.CheckFeatureCompat(t, sb, workers.FeatureMultiPlatform, workers.FeatureOCIExporter)
+
+	f := getFrontend(t, sb)
+
+	dockerfile := []byte(`FROM scratch`)
+
+	dir := integration.Tmpdir(
+		t,
+		fstest.CreateFile("Dockerfile", dockerfile, 0600),
+	)
+
+	c, err := client.New(sb.Context(), sb.Address())
+	require.NoError(t, err)
+	defer c.Close()
+
+	destDir := t.TempDir()
+
+	out := filepath.Join(destDir, "out.tar")
+	outW, err := os.Create(out)
+	require.NoError(t, err)
+
+	_, err = f.Solve(sb.Context(), c, client.SolveOpt{
+		LocalMounts: map[string]fsutil.FS{
+			dockerui.DefaultLocalNameDockerfile: dir,
+			dockerui.DefaultLocalNameContext:    dir,
+		},
+		FrontendAttrs: map[string]string{
+			"platform": "linux/arm64,linux/amd64",
+		},
+		Exports: []client.ExportEntry{
+			{
+				Type:   client.ExporterOCI,
+				Output: fixedWriteCloser(outW),
+			},
+		},
+	}, nil)
+	require.NoError(t, err)
+
+	dt, err := os.ReadFile(filepath.Join(destDir, "out.tar"))
+	require.NoError(t, err)
+
+	m, err := testutil.ReadTarToMap(dt, false)
+	require.NoError(t, err)
+
+	var idx ocispecs.Index
+	err = json.Unmarshal(m[ocispecs.ImageIndexFile].Data, &idx)
+	require.NoError(t, err)
+
+	require.Equal(t, 1, len(idx.Manifests))
+	mlistHex := idx.Manifests[0].Digest.Hex()
+
+	idx = ocispecs.Index{}
+	err = json.Unmarshal(m[ocispecs.ImageBlobsDir+"/sha256/"+mlistHex].Data, &idx)
+	require.NoError(t, err)
+
+	require.Equal(t, 2, len(idx.Manifests))
+}
+
 func timeMustParse(t *testing.T, layout, value string) time.Time {
 	tm, err := time.Parse(layout, value)
 	require.NoError(t, err)
@@ -9419,7 +9673,7 @@ COPY notexist /foo
 	got := false
 	for {
 		resp, err := cl.Recv()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			require.Equal(t, true, got, "expected error was %+v", expectedError)
 			break
 		}
@@ -9461,7 +9715,7 @@ COPY notexist /foo
 		}
 
 		err = grpcerrors.FromGRPC(status.FromProto(&statuspb.Status{
-			Code:    int32(st.Code),
+			Code:    st.Code,
 			Message: st.Message,
 			Details: details,
 		}).Err())
@@ -9543,7 +9797,7 @@ COPY Dockerfile /foo
 	got := false
 	for {
 		resp, err := cl.Recv()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			require.Equal(t, true, got)
 			break
 		}
@@ -9648,8 +9902,8 @@ EOF
 	info, err := testutil.ReadImages(ctx, provider, desc)
 	require.NoError(t, err)
 	require.Len(t, info.Images, 2)
-	require.Equal(t, info.Images[0].Img.Platform.OSVersion, p1.OSVersion)
-	require.Equal(t, info.Images[1].Img.Platform.OSVersion, p2.OSVersion)
+	require.Equal(t, info.Images[0].Img.OSVersion, p1.OSVersion)
+	require.Equal(t, info.Images[1].Img.OSVersion, p2.OSVersion)
 
 	dt, err := os.ReadFile(filepath.Join(destDir, strings.Replace(p1Str, "/", "_", 1), "osversion"))
 	require.NoError(t, err)
@@ -9786,7 +10040,7 @@ EOF
 	info, err := testutil.ReadImages(ctx, provider, desc)
 	require.NoError(t, err)
 	require.Len(t, info.Images, 1)
-	require.Equal(t, info.Images[0].Img.Platform.OSVersion, p1.OSVersion)
+	require.Equal(t, info.Images[0].Img.OSVersion, p1.OSVersion)
 
 	dockerfile = fmt.Appendf(nil, `
 FROM %s
@@ -9829,7 +10083,7 @@ EOF
 	info, err = testutil.ReadImages(ctx, provider, desc)
 	require.NoError(t, err)
 	require.Len(t, info.Images, 1)
-	require.Equal(t, info.Images[0].Img.Platform.OSVersion, p1.OSVersion)
+	require.Equal(t, info.Images[0].Img.OSVersion, p1.OSVersion)
 }
 
 func testTargetMistype(t *testing.T, sb integration.Sandbox) {
@@ -9916,7 +10170,7 @@ func checkAllReleasable(t *testing.T, c *client.Client, sb integration.Sandbox, 
 
 	for {
 		resp, err := cl.Recv()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		require.NoError(t, err)
